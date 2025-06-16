@@ -6,4 +6,4 @@ go run paping.go ip port
 &
 (cmd) paping.exe ip port
 ```
-![Uploading image.png…]()
+![image](https://github.com/user-attachments/assets/c2735423-9485-4997-82a2-3ba0fbd13f4d)

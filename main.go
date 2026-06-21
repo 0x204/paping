@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -19,30 +20,38 @@ import (
 
 type ConnectionStats struct {
 	sync.Mutex
-	Attempted int
-	Connected int
-	Failed    int
-	MinTime   time.Duration
-	MaxTime   time.Duration
-	TotalTime time.Duration
+	Attempted    int
+	Connected    int
+	Failed       int
+	HasConnected bool
+	MinTime      time.Duration
+	MaxTime      time.Duration
+	TotalTime    time.Duration
 }
 
 type IPInfo struct {
 	Org string `json:"org"`
 }
 
-var (
-	logger           = log.New(os.Stdout, "", 0)
-	ipInfoCache      = make(map[string]*IPInfo)
-	ipInfoCacheMutex sync.Mutex
+const (
+	ipInfoAPIURL  = "https://ipinfo.io/%s/json"
+	dialTimeout   = 5 * time.Second
+	httpTimeout   = 5 * time.Second
+	pingInterval  = 550 * time.Millisecond
+	maxConcurrent = 4
 )
 
-const (
-	ipInfoAPIURL = "http://ipinfo.io/%s/json"
-	dialTimeout  = 5 * time.Second
-	httpTimeout  = 5 * time.Second
-	pingInterval = 550 * time.Millisecond
+var (
+	logger = log.New(os.Stdout, "", 0)
+	org    atomic.Pointer[string]
 )
+
+func currentOrg() string {
+	if p := org.Load(); p != nil {
+		return *p
+	}
+	return "Unknown"
+}
 
 func isValidPort(port int) bool {
 	return port >= 1 && port <= 65535
@@ -67,13 +76,17 @@ func resolveHost(host string) (string, error) {
 	return "", fmt.Errorf("no addresses for %s", host)
 }
 
-func ping(host, ip string, port int, stats *ConnectionStats) {
+func ping(ctx context.Context, host, ip string, port int, stats *ConnectionStats) {
+	dialer := net.Dialer{Timeout: dialTimeout}
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), dialTimeout)
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
 	duration := time.Since(start)
 
 	if err != nil {
-		logger.Print(color.RedString("Connection to %s:%d failed: %v\n", host, port, err))
+		if ctx.Err() != nil {
+			return
+		}
+		logger.Print(color.RedString("Connection to %s:%d failed: %v", host, port, err))
 		stats.Lock()
 		stats.Attempted++
 		stats.Failed++
@@ -82,50 +95,41 @@ func ping(host, ip string, port int, stats *ConnectionStats) {
 	}
 	_ = conn.Close()
 
-	org := "Unknown"
-	if info, err := getIPInfo(ip); err == nil && info.Org != "" {
-		org = info.Org
-	}
-
 	ms := float64(duration.Microseconds()) / 1000
-	logger.Printf("Connected to "+color.GreenString("%s")+" time="+color.GreenString("%.2fms")+" protocol="+color.GreenString("TCP")+" port="+color.GreenString("%d")+" ISP="+color.GreenString("%s")+"\n", host, ms, port, org)
+	logger.Printf("Connected to "+color.GreenString("%s")+" time="+color.GreenString("%.2fms")+" protocol="+color.GreenString("TCP")+" port="+color.GreenString("%d")+" ISP="+color.GreenString("%s")+"\n", host, ms, port, currentOrg())
 
 	stats.Lock()
 	stats.Attempted++
 	stats.Connected++
 	stats.TotalTime += duration
-	if stats.MinTime == 0 || duration < stats.MinTime {
+	if !stats.HasConnected || duration < stats.MinTime {
 		stats.MinTime = duration
 	}
 	if duration > stats.MaxTime {
 		stats.MaxTime = duration
 	}
+	stats.HasConnected = true
 	stats.Unlock()
 }
 
-func getIPInfo(ip string) (*IPInfo, error) {
-	ipInfoCacheMutex.Lock()
-	if info, ok := ipInfoCache[ip]; ok {
-		ipInfoCacheMutex.Unlock()
-		return info, nil
-	}
-	ipInfoCacheMutex.Unlock()
-
+func fetchOrg(ip string) {
 	resp, err := (&http.Client{Timeout: httpTimeout}).Get(fmt.Sprintf(ipInfoAPIURL, ip))
 	if err != nil {
-		return nil, err
+		return
 	}
 	defer resp.Body.Close()
 
-	var info IPInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, err
+	if resp.StatusCode != http.StatusOK {
+		return
 	}
 
-	ipInfoCacheMutex.Lock()
-	ipInfoCache[ip] = &info
-	ipInfoCacheMutex.Unlock()
-	return &info, nil
+	var info IPInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return
+	}
+	if info.Org != "" {
+		org.Store(&info.Org)
+	}
 }
 
 func main() {
@@ -144,21 +148,41 @@ func main() {
 		logger.Fatalf("Cannot resolve %s: %v", host, err)
 	}
 
+	go fetchOrg(ip)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	stats := &ConnectionStats{}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrent)
+
+	probe := func() {
+		select {
+		case sem <- struct{}{}:
+		default:
+			return
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			ping(ctx, host, ip, port, stats)
+		}()
+	}
+
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 
-	go ping(host, ip, port, stats)
+	probe()
 	for {
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			printReport(stats)
 			return
 		case <-ticker.C:
-			go ping(host, ip, port, stats)
+			probe()
 		}
 	}
 }

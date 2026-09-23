@@ -7,9 +7,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -35,20 +37,25 @@ const (
 	httpTimeout  = 5 * time.Second
 	pingInterval = 550 * time.Millisecond
 	unknownOrg   = "Unknown"
-	// maxOrgAttempts bounds the lookups spent on a single IP. Failures are not
-	// cached, so a transient error recovers on a later probe, but a service
-	// that is down or rate-limiting us stops delaying every probe.
+	// maxOrgAttempts bounds the requests spent on the probed IP, and
+	// orgRetryDelay spaces them out so a short outage cannot use them all up.
 	maxOrgAttempts = 3
+	orgRetryDelay  = 10 * time.Second
 )
 
-var logger = log.New(os.Stdout, "", 0)
+var (
+	logger    = log.New(color.Output, "", 0)
+	errLogger = log.New(os.Stderr, "", 0)
+)
 
 func isValidPort(port int) bool {
 	return port >= 1 && port <= 65535
 }
 
 func resolveHost(host string) (string, error) {
-	if net.ParseIP(host) != nil {
+	// netip, unlike net.ParseIP, accepts a zone such as fe80::1%eth0, which
+	// the resolver would drop.
+	if _, err := netip.ParseAddr(host); err == nil {
 		return host, nil
 	}
 	ips, err := net.LookupIP(host)
@@ -66,39 +73,67 @@ func resolveHost(host string) (string, error) {
 	return "", fmt.Errorf("no addresses for %s", host)
 }
 
-// orgEntry is the organization lookup for one IP.
-type orgEntry struct {
-	org      string // resolved organization, empty until a lookup succeeds
-	failures int    // lookups already spent on this IP without success
+// orgLookup fetches the organization that owns the probed IP. It starts on the
+// first successful probe, so an address that never answers is not disclosed to
+// ipinfo.io, and runs in the background, so it never holds up probing.
+type orgLookup struct {
+	ip    string
+	start sync.Once
+	done  chan struct{} // closed when the lookup has finished
+	org   string        // valid once done is closed; empty if not found
 }
 
-// orgCache maps an IP to its organization. Probes run one at a time on a
-// single goroutine, so it needs no locking.
-type orgCache map[string]*orgEntry
+func newOrgLookup(ip string) *orgLookup {
+	return &orgLookup{ip: ip, done: make(chan struct{})}
+}
 
-// lookup returns the organization for ip, fetching it on first use. Only
-// successful lookups are cached, so a transient failure is retried on the next
-// probe rather than pinning the display to "Unknown" for the whole run.
-func (c orgCache) lookup(ctx context.Context, ip string) string {
-	e := c[ip]
-	if e == nil {
-		e = &orgEntry{}
-		c[ip] = e
+// get returns the organization, or unknownOrg while it is not known. The first
+// call starts the lookup and waits up to wait for it to finish.
+func (l *orgLookup) get(ctx context.Context, wait time.Duration) string {
+	l.start.Do(func() {
+		go l.run(ctx)
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-l.done:
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+	})
+	select {
+	case <-l.done:
+		if l.org != "" {
+			return l.org
+		}
+	default:
 	}
-	switch {
-	case e.org != "":
-		return e.org
-	case e.failures >= maxOrgAttempts:
-		return unknownOrg
-	}
+	return unknownOrg
+}
 
-	org, err := fetchOrg(ctx, ip)
-	if err != nil || org == "" {
-		e.failures++
-		return unknownOrg
+func (l *orgLookup) run(ctx context.Context) {
+	defer close(l.done)
+	// ipinfo.io knows no organization for loopback, private or link-local
+	// addresses, so asking would only disclose internal addressing.
+	if ip := net.ParseIP(l.ip); !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return
 	}
-	e.org = org
-	return e.org
+	for attempt := 1; ; attempt++ {
+		// An answer without an organization is final too: asking again would
+		// only repeat it.
+		org, err := fetchOrg(ctx, l.ip)
+		if err == nil {
+			l.org = org
+			return
+		}
+		if attempt == maxOrgAttempts {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(orgRetryDelay):
+		}
+	}
 }
 
 func fetchOrg(ctx context.Context, ip string) (string, error) {
@@ -127,7 +162,7 @@ func fetchOrg(ctx context.Context, ip string) (string, error) {
 	return info.Org, nil
 }
 
-func ping(ctx context.Context, host, ip string, port int, stats *ConnectionStats, orgs orgCache) {
+func ping(ctx context.Context, host, ip string, port int, stats *ConnectionStats, isp *orgLookup) {
 	dialer := net.Dialer{Timeout: dialTimeout}
 	start := time.Now()
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
@@ -137,17 +172,16 @@ func ping(ctx context.Context, host, ip string, port int, stats *ConnectionStats
 		if ctx.Err() != nil {
 			return
 		}
-		logger.Print(color.RedString("Connection to %s:%d failed: %v", host, port, err))
+		logger.Print(color.RedString("Connection to %s failed: %v", net.JoinHostPort(host, strconv.Itoa(port)), err))
 		stats.Attempted++
 		stats.Failed++
 		return
 	}
 	_ = conn.Close()
 
-	// Resolved only once the connect has succeeded and duration is already
-	// measured, so a host that never answers is never disclosed to a third
-	// party and the lookup cannot inflate the reported latency.
-	org := orgs.lookup(ctx, ip)
+	// Give the ISP lookup the rest of this probe's interval, so the first line
+	// normally shows it without the next probe being held up.
+	org := isp.get(ctx, pingInterval-duration)
 
 	ms := float64(duration.Microseconds()) / 1000
 	logger.Printf("Connected to "+color.GreenString("%s")+" time="+color.GreenString("%.2fms")+" protocol="+color.GreenString("TCP")+" port="+color.GreenString("%d")+" ISP="+color.GreenString("%s")+"\n", host, ms, port, org)
@@ -165,25 +199,25 @@ func ping(ctx context.Context, host, ip string, port int, stats *ConnectionStats
 
 func main() {
 	if len(os.Args) != 3 {
-		logger.Fatal("Usage: paping <host> <port>")
+		errLogger.Fatal("Usage: paping <host> <port>")
 	}
 
 	host := os.Args[1]
 	port, err := strconv.Atoi(os.Args[2])
 	if err != nil || !isValidPort(port) {
-		logger.Fatalf("Invalid port number: %s", os.Args[2])
+		errLogger.Fatalf("Invalid port number: %s", os.Args[2])
 	}
 
 	ip, err := resolveHost(host)
 	if err != nil {
-		logger.Fatalf("Cannot resolve %s: %v", host, err)
+		errLogger.Fatalf("Cannot resolve %s: %v", host, err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	stats := &ConnectionStats{}
-	orgs := orgCache{}
+	isp := newOrgLookup(ip)
 
 	// One probe at a time. A probe that outlasts pingInterval delays the next
 	// one instead of overlapping with it, and the pending tick fires as soon
@@ -192,7 +226,7 @@ func main() {
 	defer ticker.Stop()
 
 	for ctx.Err() == nil {
-		ping(ctx, host, ip, port, stats, orgs)
+		ping(ctx, host, ip, port, stats, isp)
 		select {
 		case <-ctx.Done():
 		case <-ticker.C:
@@ -209,8 +243,8 @@ func printReport(stats *ConnectionStats) {
 		return
 	}
 
-	successRate := float64(stats.Connected) / float64(stats.Attempted) * 100
-	logger.Printf("Attempted = "+color.CyanString("%d")+", Connected = "+color.CyanString("%d")+", Failed = "+color.CyanString("%d")+" ("+color.CyanString("%.2f%%")+")\n", stats.Attempted, stats.Connected, stats.Failed, successRate)
+	failureRate := float64(stats.Failed) / float64(stats.Attempted) * 100
+	logger.Printf("Attempted = "+color.CyanString("%d")+", Connected = "+color.CyanString("%d")+", Failed = "+color.CyanString("%d")+" ("+color.CyanString("%.2f%%")+")\n", stats.Attempted, stats.Connected, stats.Failed, failureRate)
 
 	if stats.Connected > 0 {
 		minMs := float64(stats.MinTime.Microseconds()) / 1000

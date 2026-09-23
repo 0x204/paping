@@ -2,6 +2,9 @@ package cli
 
 import (
 	"errors"
+	"net"
+	"net/netip"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -9,8 +12,34 @@ import (
 	"github.com/0x204/paping/internal/ping"
 )
 
+func TestPrinterHeader(t *testing.T) {
+	tests := []struct {
+		host string
+		addr string
+		want string
+	}{
+		{"example.com", "93.184.215.14", "Connecting to example.com [93.184.215.14] on TCP 443:\n\n"},
+		{"192.0.2.1", "192.0.2.1", "Connecting to 192.0.2.1 on TCP 443:\n\n"},
+		{"::ffff:192.0.2.1", "192.0.2.1", "Connecting to ::ffff:192.0.2.1 [192.0.2.1] on TCP 443:\n\n"},
+	}
+	for _, tt := range tests {
+		var b strings.Builder
+		p := &printer{w: &b, host: tt.host, port: 443}
+		p.header(netip.MustParseAddr(tt.addr))
+		if got := b.String(); got != tt.want {
+			t.Errorf("header for %s:\ngot  %q\nwant %q", tt.host, got, tt.want)
+		}
+	}
+}
+
 func TestPrinterResult(t *testing.T) {
-	refused := errors.New("connection refused")
+	refused := &net.OpError{
+		Op:  "dial",
+		Net: "tcp",
+		Err: os.NewSyscallError("connect", errors.New("connection refused")),
+	}
+	timedOut := &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}
+
 	tests := []struct {
 		name string
 		host string
@@ -32,13 +61,19 @@ func TestPrinterResult(t *testing.T) {
 			want: "Connected to 192.0.2.1 time=1.00ms protocol=TCP port=443 ISP=Unknown\n",
 		},
 		{
-			name: "failed",
+			name: "refused",
 			host: "example.com",
 			r:    ping.Result{Err: refused},
 			want: "Connection to example.com:443 failed: connection refused\n",
 		},
 		{
-			name: "failed IPv6",
+			name: "timed out",
+			host: "example.com",
+			r:    ping.Result{Err: timedOut},
+			want: "Connection to example.com:443 failed: timed out\n",
+		},
+		{
+			name: "IPv6",
 			host: "2001:db8::1",
 			r:    ping.Result{Err: refused},
 			want: "Connection to [2001:db8::1]:443 failed: connection refused\n",
@@ -64,13 +99,14 @@ func TestPrinterSummary(t *testing.T) {
 	}{
 		{
 			name: "no attempts",
-			want: "\nConnection statistics:\nNo attempts made.\n",
+			want: "\nConnection statistics:\n" +
+				"    No attempts made.\n",
 		},
 		{
 			name:  "none connected",
 			stats: ping.Stats{Attempted: 2},
 			want: "\nConnection statistics:\n" +
-				"Attempted = 2, Connected = 0, Failed = 2 (100.00%)\n",
+				"    Attempted = 2, Connected = 0, Failed = 2 (100.00%)\n",
 		},
 		{
 			name: "some connected",
@@ -82,9 +118,9 @@ func TestPrinterSummary(t *testing.T) {
 				Total:     60 * time.Millisecond,
 			},
 			want: "\nConnection statistics:\n" +
-				"Attempted = 4, Connected = 3, Failed = 1 (25.00%)\n" +
+				"    Attempted = 4, Connected = 3, Failed = 1 (25.00%)\n" +
 				"Approximate connection times:\n" +
-				" Minimum = 10.00ms, Maximum = 30.00ms, Average = 20.00ms\n",
+				"    Minimum = 10.00ms, Maximum = 30.00ms, Average = 20.00ms\n",
 		},
 	}
 	for _, tt := range tests {

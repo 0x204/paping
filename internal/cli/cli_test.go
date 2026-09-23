@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fatih/color"
 )
@@ -67,6 +68,31 @@ func TestRunHelp(t *testing.T) {
 	}
 }
 
+func TestParseArgs(t *testing.T) {
+	defaults := config{host: "example.com", port: 443, interval: defaultInterval, timeout: defaultTimeout}
+	custom := config{host: "example.com", port: 443, count: 5, interval: time.Second, timeout: 2 * time.Second}
+
+	tests := []struct {
+		args []string
+		want config
+	}{
+		{[]string{"example.com", "443"}, defaults},
+		{[]string{"-c", "5", "-i", "1s", "-t", "2s", "example.com", "443"}, custom},
+		{[]string{"example.com", "443", "-c", "5", "-i", "1s", "-t", "2s"}, custom},
+		{[]string{"-c", "5", "example.com", "-i", "1s", "443", "-t", "2s"}, custom},
+	}
+	for _, tt := range tests {
+		got, err := parseArgs(tt.args)
+		if err != nil {
+			t.Errorf("parseArgs(%q): %v", tt.args, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("parseArgs(%q) = %+v, want %+v", tt.args, got, tt.want)
+		}
+	}
+}
+
 func TestRunInvalidCommandLine(t *testing.T) {
 	tests := []struct {
 		args []string
@@ -79,6 +105,7 @@ func TestRunInvalidCommandLine(t *testing.T) {
 		{[]string{"example.com", "65536"}, `invalid port "65536"`},
 		{[]string{"example.com", "http"}, `invalid port "http"`},
 		{[]string{"-c", "-1", "example.com", "80"}, "invalid count -1"},
+		{[]string{"example.com", "80", "-c", "-1"}, "invalid count -1"},
 		{[]string{"-c", "many", "example.com", "80"}, `invalid value "many" for flag -c`},
 		{[]string{"-i", "0s", "example.com", "80"}, "invalid interval 0s"},
 		{[]string{"-t", "-1s", "example.com", "80"}, "invalid timeout -1s"},

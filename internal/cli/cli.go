@@ -20,6 +20,7 @@ const (
 	defaultInterval = 550 * time.Millisecond
 	defaultTimeout  = 5 * time.Second
 	ispTimeout      = 5 * time.Second
+	ispWait         = time.Second // how long the first line may wait for the ISP
 )
 
 var usage = fmt.Sprintf(`Usage: paping [options] <host> <port>
@@ -77,10 +78,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		stats.Add(r)
 		var isp string
 		if r.Err == nil {
-			// Only a host that answers is looked up on ipinfo.io. The lookup
-			// gets the rest of this probe's interval, so the first line
-			// normally shows the ISP without holding up the next probe.
-			isp = lookup.get(ctx, opts.Interval-r.RTT)
+			// Only a host that answers is looked up on ipinfo.io. The first
+			// line waits briefly for the ISP, but never past the next probe.
+			isp = lookup.get(ctx, min(ispWait, opts.Interval-r.RTT))
 		}
 		out.result(r, isp)
 		if stats.Attempted == cfg.count {
@@ -104,17 +104,27 @@ func parseArgs(args []string) (config, error) {
 	fs.IntVar(&cfg.count, "c", cfg.count, "")
 	fs.DurationVar(&cfg.interval, "i", cfg.interval, "")
 	fs.DurationVar(&cfg.timeout, "t", cfg.timeout, "")
-	if err := fs.Parse(args); err != nil {
-		return config{}, err
+
+	// Options may also follow the host and port, as in "paping example.com 443 -c 5".
+	var operands []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return config{}, err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		operands = append(operands, fs.Arg(0))
+		args = fs.Args()[1:]
 	}
-	if fs.NArg() != 2 {
+	if len(operands) != 2 {
 		return config{}, errors.New("expected a host and a port")
 	}
 
-	cfg.host = fs.Arg(0)
-	port, err := strconv.ParseUint(fs.Arg(1), 10, 16)
+	cfg.host = operands[0]
+	port, err := strconv.ParseUint(operands[1], 10, 16)
 	if err != nil || port == 0 {
-		return config{}, fmt.Errorf("invalid port %q", fs.Arg(1))
+		return config{}, fmt.Errorf("invalid port %q", operands[1])
 	}
 	cfg.port = uint16(port)
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/0x204/paping/internal/ipinfo"
@@ -20,13 +21,15 @@ const (
 	defaultInterval = 550 * time.Millisecond
 	defaultTimeout  = 5 * time.Second
 	ispTimeout      = 5 * time.Second
-	ispWait         = time.Second // how long the first line may wait for the ISP
 )
 
 var usage = fmt.Sprintf(`Usage: paping [options] <host> <port>
 
 Repeatedly connects to a TCP port and reports how long each connection takes
 to establish.
+
+Options may also follow the host and port. Any argument after "--" is taken
+as the host or port, even one that starts with "-".
 
 Options:
   -c count      stop after count probes (default: until interrupted)
@@ -79,8 +82,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		var isp string
 		if r.Err == nil {
 			// Only a host that answers is looked up on ipinfo.io. The first
-			// line waits briefly for the ISP, but never past the next probe.
-			isp = lookup.get(ctx, min(ispWait, opts.Interval-r.RTT))
+			// line waits for the first request, but never past the next probe.
+			isp = lookup.get(ctx, opts.Interval-r.RTT)
 		}
 		out.result(r, isp)
 		if stats.Attempted == cfg.count {
@@ -105,17 +108,9 @@ func parseArgs(args []string) (config, error) {
 	fs.DurationVar(&cfg.interval, "i", cfg.interval, "")
 	fs.DurationVar(&cfg.timeout, "t", cfg.timeout, "")
 
-	// Options may also follow the host and port, as in "paping example.com 443 -c 5".
-	var operands []string
-	for {
-		if err := fs.Parse(args); err != nil {
-			return config{}, err
-		}
-		if fs.NArg() == 0 {
-			break
-		}
-		operands = append(operands, fs.Arg(0))
-		args = fs.Args()[1:]
+	options, operands := splitArgs(fs, args)
+	if err := fs.Parse(options); err != nil {
+		return config{}, err
 	}
 	if len(operands) != 2 {
 		return config{}, errors.New("expected a host and a port")
@@ -137,4 +132,28 @@ func parseArgs(args []string) (config, error) {
 		return config{}, fmt.Errorf("invalid timeout %v", cfg.timeout)
 	}
 	return cfg, nil
+}
+
+// splitArgs separates options from operands, so that options may come before,
+// between or after the host and port. Everything after "--" is an operand, as
+// is an argument that looks like a negative number, such as a mistyped port.
+// An option written as "-c 5" takes the next argument as its value; none of
+// paping's options is a boolean.
+func splitArgs(fs *flag.FlagSet, args []string) (options, operands []string) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			return options, append(operands, args[i+1:]...)
+		case len(arg) < 2 || arg[0] != '-' || ('0' <= arg[1] && arg[1] <= '9'):
+			operands = append(operands, arg)
+		default:
+			options = append(options, arg)
+			if fs.Lookup(strings.TrimLeft(arg, "-")) != nil && i+1 < len(args) {
+				i++
+				options = append(options, args[i])
+			}
+		}
+	}
+	return options, operands
 }

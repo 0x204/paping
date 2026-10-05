@@ -70,6 +70,20 @@ func TestISPLookupWaitIsBounded(t *testing.T) {
 	})
 }
 
+func TestISPLookupFirstGetDoesNotWaitForRetries(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := newTestLookup(&fakeFetch{delay: 2 * time.Second, failures: 1, org: "AS64500 Example"})
+
+		start := time.Now()
+		if got := l.get(t.Context(), time.Minute); got != "" {
+			t.Errorf("get() = %q after a failed request, want \"\"", got)
+		}
+		if elapsed := time.Since(start); elapsed != 2*time.Second {
+			t.Errorf("get() took %v, want 2s", elapsed)
+		}
+	})
+}
+
 func TestISPLookupRetries(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := &fakeFetch{failures: 1, org: "AS64500 Example"}

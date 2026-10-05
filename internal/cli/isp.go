@@ -19,15 +19,18 @@ type ispLookup struct {
 	fetch func(context.Context, netip.Addr) (string, error)
 	addr  netip.Addr
 
-	start sync.Once
-	done  chan struct{} // closed when the lookup has finished
-	org   string        // set before done is closed; empty if not found
+	start  sync.Once
+	failed chan struct{} // closed if the first request fails
+	done   chan struct{} // closed when the lookup has finished
+	org    string        // set before done is closed; empty if not found
 }
 
 // get returns the organization, or "" while it is unknown. The first call
-// starts the lookup and waits up to wait for it to finish.
+// starts the lookup and waits for its first request, but no longer than wait.
+// It does not wait for retries.
 func (l *ispLookup) get(ctx context.Context, wait time.Duration) string {
 	l.start.Do(func() {
+		l.failed = make(chan struct{})
 		l.done = make(chan struct{})
 		go l.run(ctx)
 
@@ -35,6 +38,7 @@ func (l *ispLookup) get(ctx context.Context, wait time.Duration) string {
 		defer timer.Stop()
 		select {
 		case <-l.done:
+		case <-l.failed:
 		case <-timer.C:
 		case <-ctx.Done():
 		}
@@ -57,6 +61,9 @@ func (l *ispLookup) run(ctx context.Context) {
 		if err == nil {
 			l.org = org
 			return
+		}
+		if attempt == 1 {
+			close(l.failed)
 		}
 		if attempt == ispAttempts {
 			return

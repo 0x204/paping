@@ -36,6 +36,10 @@ paping [options] <host> <port>
 | `-i interval` | Time between probes, such as `1s` or `200ms` | `550ms`               |
 | `-t timeout`  | How long to wait for each connection         | `5s`                  |
 
+Options can also follow the host and port, as in `paping 1.1.1.1 443 -c 4`.
+Anything after `--` is taken as the host or port, so a script that passes them
+in variables should use `paping -- "$host" "$port"`.
+
 Without `-c`, paping runs until you press Ctrl+C. Either way, it ends with a
 summary:
 
@@ -66,8 +70,9 @@ Output is not colored when it goes to a file or pipe, or when `NO_COLOR` is set.
 The ISP comes from [ipinfo.io](https://ipinfo.io). paping asks for it after the
 first successful connection, so the address of a host that never answers is not
 sent there, and never asks about loopback, private or link-local addresses. The
-ISP shows as `Unknown` until the answer arrives, and stays that way if ipinfo.io
-cannot be reached or has no record of the address.
+first line waits for that request, but not past the next probe. The ISP shows
+as `Unknown` until the answer arrives, and stays that way if ipinfo.io cannot be
+reached or has no record of the address.
 
 ## Development
 

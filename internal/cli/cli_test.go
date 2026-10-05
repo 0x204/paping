@@ -56,15 +56,23 @@ func TestRunNoConnection(t *testing.T) {
 }
 
 func TestRunHelp(t *testing.T) {
-	var stdout, stderr strings.Builder
-	if code := Run(t.Context(), []string{"-h"}, &stdout, &stderr); code != 0 {
-		t.Errorf("exit status = %d, want 0", code)
-	}
-	if stdout.String() != usage {
-		t.Errorf("stdout = %q, want the usage text", stdout.String())
-	}
-	if stderr.Len() != 0 {
-		t.Errorf("stderr = %q, want nothing", stderr.String())
+	for _, args := range [][]string{
+		{"-h"},
+		{"--help"},
+		{"example.com", "443", "-h"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			if code := Run(t.Context(), args, &stdout, &stderr); code != 0 {
+				t.Errorf("exit status = %d, want 0", code)
+			}
+			if stdout.String() != usage {
+				t.Errorf("stdout = %q, want the usage text", stdout.String())
+			}
+			if stderr.Len() != 0 {
+				t.Errorf("stderr = %q, want nothing", stderr.String())
+			}
+		})
 	}
 }
 
@@ -80,6 +88,9 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"-c", "5", "-i", "1s", "-t", "2s", "example.com", "443"}, custom},
 		{[]string{"example.com", "443", "-c", "5", "-i", "1s", "-t", "2s"}, custom},
 		{[]string{"-c", "5", "example.com", "-i", "1s", "443", "-t", "2s"}, custom},
+		{[]string{"-c=5", "--i=1s", "--t", "2s", "example.com", "443"}, custom},
+		{[]string{"--", "example.com", "443"}, defaults},
+		{[]string{"-c", "5", "-i", "1s", "-t", "2s", "--", "example.com", "443"}, custom},
 	}
 	for _, tt := range tests {
 		got, err := parseArgs(tt.args)
@@ -104,12 +115,18 @@ func TestRunInvalidCommandLine(t *testing.T) {
 		{[]string{"example.com", "0"}, `invalid port "0"`},
 		{[]string{"example.com", "65536"}, `invalid port "65536"`},
 		{[]string{"example.com", "http"}, `invalid port "http"`},
+		{[]string{"example.com", "-80"}, `invalid port "-80"`},
+		{[]string{"example.com", "-1", "-c", "5"}, `invalid port "-1"`},
+		{[]string{"--", "example.com", "-h"}, `invalid port "-h"`},
+		{[]string{"--", "example.com", "443", "-c", "5"}, "expected a host and a port"},
 		{[]string{"-c", "-1", "example.com", "80"}, "invalid count -1"},
 		{[]string{"example.com", "80", "-c", "-1"}, "invalid count -1"},
 		{[]string{"-c", "many", "example.com", "80"}, `invalid value "many" for flag -c`},
+		{[]string{"example.com", "80", "-c"}, "flag needs an argument: -c"},
 		{[]string{"-i", "0s", "example.com", "80"}, "invalid interval 0s"},
 		{[]string{"-t", "-1s", "example.com", "80"}, "invalid timeout -1s"},
 		{[]string{"-x", "example.com", "80"}, "flag provided but not defined: -x"},
+		{[]string{"example.com", "80", "-x"}, "flag provided but not defined: -x"},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {

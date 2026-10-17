@@ -23,9 +23,10 @@ var (
 
 // printer writes the report for probes of a single host and port.
 type printer struct {
-	w    io.Writer
-	host string
-	port uint16
+	w       io.Writer
+	host    string
+	port    uint16
+	showISP bool // whether lines for successful probes name the ISP
 }
 
 // header prints the line that opens the report, naming the address that
@@ -38,18 +39,23 @@ func (p *printer) header(addr netip.Addr) {
 	fmt.Fprintf(p.w, "Connecting to %s on TCP %d:\n\n", target, p.port)
 }
 
-// result prints the outcome of a probe. isp is shown for a successful one.
+// result prints the outcome of a probe. isp is shown for a successful one if
+// the printer shows the ISP at all.
 func (p *printer) result(r ping.Result, isp string) {
 	if r.Err != nil {
 		addr := net.JoinHostPort(p.host, strconv.Itoa(int(p.port)))
 		fmt.Fprintln(p.w, red(fmt.Sprintf("Connection to %s failed: %s", addr, reason(r.Err))))
 		return
 	}
-	if isp == "" {
-		isp = "Unknown"
+	fmt.Fprintf(p.w, "Connected to %s time=%s protocol=%s port=%s",
+		green(p.host), green(millis(r.RTT)), green("TCP"), green(p.port))
+	if p.showISP {
+		if isp == "" {
+			isp = "Unknown"
+		}
+		fmt.Fprintf(p.w, " ISP=%s", green(isp))
 	}
-	fmt.Fprintf(p.w, "Connected to %s time=%s protocol=%s port=%s ISP=%s\n",
-		green(p.host), green(millis(r.RTT)), green("TCP"), green(p.port), green(isp))
+	fmt.Fprintln(p.w)
 }
 
 // summary prints the statistics shown when paping exits.
@@ -66,8 +72,8 @@ func (p *printer) summary(s *ping.Stats) {
 		return
 	}
 	fmt.Fprintln(p.w, "Approximate connection times:")
-	fmt.Fprintf(p.w, "    Minimum = %s, Maximum = %s, Average = %s\n",
-		cyan(millis(s.Min)), cyan(millis(s.Max)), cyan(millis(s.Avg())))
+	fmt.Fprintf(p.w, "    Minimum = %s, Maximum = %s, Average = %s, Deviation = %s\n",
+		cyan(millis(s.Min)), cyan(millis(s.Max)), cyan(millis(s.Avg())), cyan(millis(s.StdDev())))
 }
 
 // reason describes why a connection failed. It leaves out the "dial tcp"

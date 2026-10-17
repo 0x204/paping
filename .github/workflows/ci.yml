@@ -32,3 +32,7 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: check

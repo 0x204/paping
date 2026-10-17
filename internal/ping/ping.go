@@ -28,27 +28,55 @@ type Result struct {
 }
 
 // Resolve returns the address to probe for host, which is either an IP
-// address or a hostname. A hostname with both IPv4 and IPv6 addresses
-// resolves to its first IPv4 address.
-func Resolve(ctx context.Context, host string) (netip.Addr, error) {
+// address or a hostname. network is "ip4" or "ip6" to accept only addresses
+// of that family, or "ip" to accept both, in which case a hostname with both
+// IPv4 and IPv6 addresses resolves to its first IPv4 address.
+func Resolve(ctx context.Context, network, host string) (netip.Addr, error) {
 	if addr, err := netip.ParseAddr(host); err == nil {
-		return addr.Unmap(), nil
+		addr = addr.Unmap()
+		if !inNetwork(addr, network) {
+			return netip.Addr{}, fmt.Errorf("%s is not an %s address", host, familyNames[network])
+		}
+		return addr, nil
 	}
 
-	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, network, host)
 	if err != nil {
 		return netip.Addr{}, err
 	}
-	if len(addrs) == 0 {
-		return netip.Addr{}, fmt.Errorf("no addresses found for %s", host)
-	}
+	var found netip.Addr
 	for _, addr := range addrs {
 		// The resolver may return IPv4 addresses in IPv4-mapped IPv6 form.
-		if addr = addr.Unmap(); addr.Is4() {
+		addr = addr.Unmap()
+		if !inNetwork(addr, network) {
+			continue
+		}
+		if addr.Is4() {
 			return addr, nil
 		}
+		if !found.IsValid() {
+			found = addr
+		}
 	}
-	return addrs[0], nil
+	if !found.IsValid() {
+		return netip.Addr{}, fmt.Errorf("no addresses found for %s", host)
+	}
+	return found, nil
+}
+
+// familyNames names the address family of each network that accepts only one.
+var familyNames = map[string]string{"ip4": "IPv4", "ip6": "IPv6"}
+
+// inNetwork reports whether addr belongs to network, which is "ip4", "ip6"
+// or "ip".
+func inNetwork(addr netip.Addr, network string) bool {
+	switch network {
+	case "ip4":
+		return addr.Is4()
+	case "ip6":
+		return addr.Is6()
+	}
+	return true
 }
 
 // Probe opens a TCP connection to target, timing the handshake, and closes it.

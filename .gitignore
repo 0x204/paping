@@ -1,3 +1,6 @@
 # Compiled binary produced by `go build`
 /paping
 /paping.exe
+
+# Release archives produced by GoReleaser
+/dist/

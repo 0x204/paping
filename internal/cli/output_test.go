@@ -41,24 +41,33 @@ func TestPrinterResult(t *testing.T) {
 	timedOut := &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}
 
 	tests := []struct {
-		name string
-		host string
-		r    ping.Result
-		isp  string
-		want string
+		name    string
+		host    string
+		showISP bool
+		r       ping.Result
+		isp     string
+		want    string
 	}{
 		{
-			name: "connected",
-			host: "example.com",
-			r:    ping.Result{RTT: 12346 * time.Microsecond},
-			isp:  "AS15133 Edgecast Inc.",
-			want: "Connected to example.com time=12.35ms protocol=TCP port=443 ISP=AS15133 Edgecast Inc.\n",
+			name:    "connected",
+			host:    "example.com",
+			showISP: true,
+			r:       ping.Result{RTT: 12346 * time.Microsecond},
+			isp:     "AS15133 Edgecast Inc.",
+			want:    "Connected to example.com time=12.35ms protocol=TCP port=443 ISP=AS15133 Edgecast Inc.\n",
 		},
 		{
-			name: "ISP not known",
+			name:    "ISP not known",
+			host:    "192.0.2.1",
+			showISP: true,
+			r:       ping.Result{RTT: time.Millisecond},
+			want:    "Connected to 192.0.2.1 time=1.00ms protocol=TCP port=443 ISP=Unknown\n",
+		},
+		{
+			name: "ISP not shown",
 			host: "192.0.2.1",
 			r:    ping.Result{RTT: time.Millisecond},
-			want: "Connected to 192.0.2.1 time=1.00ms protocol=TCP port=443 ISP=Unknown\n",
+			want: "Connected to 192.0.2.1 time=1.00ms protocol=TCP port=443\n",
 		},
 		{
 			name: "refused",
@@ -82,7 +91,7 @@ func TestPrinterResult(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var b strings.Builder
-			p := &printer{w: &b, host: tt.host, port: 443}
+			p := &printer{w: &b, host: tt.host, port: 443, showISP: tt.showISP}
 			p.result(tt.r, tt.isp)
 			if got := b.String(); got != tt.want {
 				t.Errorf("got  %q\nwant %q", got, tt.want)
@@ -92,10 +101,12 @@ func TestPrinterResult(t *testing.T) {
 }
 
 func TestPrinterSummary(t *testing.T) {
+	refused := ping.Result{Err: errors.New("connection refused")}
+
 	tests := []struct {
-		name  string
-		stats ping.Stats
-		want  string
+		name    string
+		results []ping.Result
+		want    string
 	}{
 		{
 			name: "no attempts",
@@ -103,31 +114,34 @@ func TestPrinterSummary(t *testing.T) {
 				"    No attempts made.\n",
 		},
 		{
-			name:  "none connected",
-			stats: ping.Stats{Attempted: 2},
+			name:    "none connected",
+			results: []ping.Result{refused, refused},
 			want: "\nConnection statistics:\n" +
 				"    Attempted = 2, Connected = 0, Failed = 2 (100.00%)\n",
 		},
 		{
 			name: "some connected",
-			stats: ping.Stats{
-				Attempted: 4,
-				Connected: 3,
-				Min:       10 * time.Millisecond,
-				Max:       30 * time.Millisecond,
-				Total:     60 * time.Millisecond,
+			results: []ping.Result{
+				{RTT: 10 * time.Millisecond},
+				refused,
+				{RTT: 30 * time.Millisecond},
+				{RTT: 20 * time.Millisecond},
 			},
 			want: "\nConnection statistics:\n" +
 				"    Attempted = 4, Connected = 3, Failed = 1 (25.00%)\n" +
 				"Approximate connection times:\n" +
-				"    Minimum = 10.00ms, Maximum = 30.00ms, Average = 20.00ms\n",
+				"    Minimum = 10.00ms, Maximum = 30.00ms, Average = 20.00ms, Deviation = 8.16ms\n",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var stats ping.Stats
+			for _, r := range tt.results {
+				stats.Add(r)
+			}
 			var b strings.Builder
 			p := &printer{w: &b, host: "example.com", port: 443}
-			p.summary(&tt.stats)
+			p.summary(&stats)
 			if got := b.String(); got != tt.want {
 				t.Errorf("got  %q\nwant %q", got, tt.want)
 			}

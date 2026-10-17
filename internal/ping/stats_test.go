@@ -17,21 +17,32 @@ func TestStats(t *testing.T) {
 		s.Add(r)
 	}
 
-	want := Stats{
-		Attempted: 4,
-		Connected: 3,
-		Min:       10 * time.Millisecond,
-		Max:       30 * time.Millisecond,
-		Total:     60 * time.Millisecond,
-	}
-	if s != want {
-		t.Errorf("Stats = %+v, want %+v", s, want)
+	if s.Attempted != 4 || s.Connected != 3 {
+		t.Errorf("Attempted, Connected = %d, %d, want 4, 3", s.Attempted, s.Connected)
 	}
 	if got := s.Failed(); got != 1 {
 		t.Errorf("Failed() = %d, want 1", got)
 	}
+	if s.Min != 10*time.Millisecond || s.Max != 30*time.Millisecond {
+		t.Errorf("Min, Max = %v, %v, want 10ms, 30ms", s.Min, s.Max)
+	}
 	if got := s.Avg(); got != 20*time.Millisecond {
 		t.Errorf("Avg() = %v, want 20ms", got)
+	}
+	// The square root of ((10ms)² + 0 + (10ms)²) / 3.
+	if got := s.StdDev().Round(time.Microsecond); got != 8165*time.Microsecond {
+		t.Errorf("StdDev() = %v, want 8.165ms", got)
+	}
+}
+
+func TestStatsEqualTimes(t *testing.T) {
+	// The squares of times this long are not exact in a float64.
+	var s Stats
+	for range 1000 {
+		s.Add(Result{RTT: 4999999999 * time.Nanosecond})
+	}
+	if got := s.StdDev(); got != 0 {
+		t.Errorf("StdDev() = %v, want 0", got)
 	}
 }
 
@@ -44,5 +55,8 @@ func TestStatsWithoutConnections(t *testing.T) {
 	}
 	if got := s.Avg(); got != 0 {
 		t.Errorf("Avg() = %v, want 0", got)
+	}
+	if got := s.StdDev(); got != 0 {
+		t.Errorf("StdDev() = %v, want 0", got)
 	}
 }

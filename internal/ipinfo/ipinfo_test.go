@@ -76,6 +76,30 @@ func TestOrg(t *testing.T) {
 	}
 }
 
+func TestOrgToken(t *testing.T) {
+	tests := []struct {
+		token string
+		want  string
+	}{
+		{"", ""},
+		{"abc123", "Bearer abc123"},
+	}
+	for _, tt := range tests {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := r.Header.Get("Authorization"); got != tt.want {
+				t.Errorf("token %q: Authorization = %q, want %q", tt.token, got, tt.want)
+			}
+			fmt.Fprint(w, `{"org": "AS15169 Google LLC"}`)
+		}))
+
+		c := &Client{HTTPClient: srv.Client(), BaseURL: srv.URL, Token: tt.token}
+		if _, err := c.Org(t.Context(), netip.MustParseAddr("8.8.8.8")); err != nil {
+			t.Errorf("token %q: Org(): %v", tt.token, err)
+		}
+		srv.Close()
+	}
+}
+
 func TestOrgSkipsNonPublicAddresses(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected request for %s", r.URL.Path)
@@ -86,6 +110,8 @@ func TestOrgSkipsNonPublicAddresses(t *testing.T) {
 	for _, addr := range []string{
 		"0.0.0.0",
 		"10.1.2.3",
+		"100.64.0.1",
+		"100.127.255.254",
 		"127.0.0.1",
 		"169.254.1.1",
 		"172.16.0.1",

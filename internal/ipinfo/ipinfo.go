@@ -11,6 +11,10 @@ import (
 
 const defaultBaseURL = "https://ipinfo.io"
 
+// sharedAddressSpace is the range set aside for carrier-grade NAT (RFC 6598),
+// which VPNs such as Tailscale also use.
+var sharedAddressSpace = netip.MustParsePrefix("100.64.0.0/10")
+
 // Client is an ipinfo.io API client. The zero value is ready to use.
 type Client struct {
 	// HTTPClient makes the requests. If nil, http.DefaultClient is used.
@@ -18,13 +22,18 @@ type Client struct {
 
 	// BaseURL is the API endpoint. If empty, https://ipinfo.io is used.
 	BaseURL string
+
+	// Token is an ipinfo.io access token. Requests without one are subject
+	// to a lower rate limit.
+	Token string
 }
 
 // Org returns the organization that owns addr, such as "AS15169 Google LLC",
 // or "" if ipinfo.io has none on record. Addresses that are not publicly
-// routable, such as loopback or private ones, are never sent to ipinfo.io.
+// routable, such as loopback, private or carrier-grade NAT ones, are never
+// sent to ipinfo.io.
 func (c *Client) Org(ctx context.Context, addr netip.Addr) (string, error) {
-	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() || sharedAddressSpace.Contains(addr) {
 		return "", nil
 	}
 
@@ -36,6 +45,9 @@ func (c *Client) Org(ctx context.Context, addr netip.Addr) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 
 	httpClient := c.HTTPClient

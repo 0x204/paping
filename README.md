@@ -8,6 +8,10 @@ establish and which ISP the address belongs to.
 
 ## Installation
 
+Download an archive for Linux, macOS or Windows from the
+[releases page](https://github.com/0x204/paping/releases) and put `paping`
+somewhere on your `PATH`.
+
 With Go 1.25 or later:
 
 ```sh
@@ -32,9 +36,13 @@ paping [options] <host> <port>
 
 | Option        | Description                                  | Default               |
 | ------------- | -------------------------------------------- | --------------------- |
+| `-4`          | Use IPv4 only                                |                       |
+| `-6`          | Use IPv6 only                                |                       |
 | `-c count`    | Stop after `count` probes                    | Run until interrupted |
-| `-i interval` | Time between probes, such as `1s` or `200ms` | `550ms`               |
+| `-i interval` | Time between probes, such as `1s` or `200ms` | `1s`                  |
+| `-n`          | Do not look up the ISP                       |                       |
 | `-t timeout`  | How long to wait for each connection         | `5s`                  |
+| `-version`    | Print the version and exit                   |                       |
 
 Options can also follow the host and port, as in `paping 1.1.1.1 443 -c 4`.
 Anything after `--` is taken as the host or port, so a script that passes them
@@ -55,10 +63,14 @@ Connected to 1.1.1.1 time=11.93ms protocol=TCP port=443 ISP=AS13335 Cloudflare, 
 Connection statistics:
     Attempted = 4, Connected = 4, Failed = 0 (0.00%)
 Approximate connection times:
-    Minimum = 11.87ms, Maximum = 12.42ms, Average = 12.07ms
+    Minimum = 11.87ms, Maximum = 12.42ms, Average = 12.07ms, Deviation = 0.21ms
 ```
 
-A hostname with both IPv4 and IPv6 addresses is probed over IPv4.
+Deviation is the standard deviation of the connection times: the more they
+vary, the larger it is.
+
+A hostname with both IPv4 and IPv6 addresses is probed over IPv4 unless `-6`
+is given.
 
 The exit status is 0 if at least one connection succeeded, 1 if none did, and 2
 if the command line is invalid or the host cannot be resolved.
@@ -69,10 +81,15 @@ Output is not colored when it goes to a file or pipe, or when `NO_COLOR` is set.
 
 The ISP comes from [ipinfo.io](https://ipinfo.io). paping asks for it after the
 first successful connection, so the address of a host that never answers is not
-sent there, and never asks about loopback, private or link-local addresses. The
-first line waits for that request, but not past the next probe. The ISP shows
-as `Unknown` until the answer arrives, and stays that way if ipinfo.io cannot be
-reached or has no record of the address.
+sent there, and never asks about loopback, private, link-local or carrier-grade
+NAT addresses. The first line waits for that request, but not past the next
+probe. The ISP shows as `Unknown` until the answer arrives, and stays that way
+if ipinfo.io cannot be reached or has no record of the address.
+
+With `-n`, paping sends nothing to ipinfo.io and leaves the ISP out.
+
+ipinfo.io limits how many requests it answers without an access token. If you
+have one, set it in `IPINFO_TOKEN`.
 
 ## Development
 
@@ -80,3 +97,6 @@ reached or has no record of the address.
 go test ./...
 golangci-lint run
 ```
+
+Pushing a tag such as `v1.0.0` builds the release archives with
+[GoReleaser](https://goreleaser.com) and publishes them on the releases page.

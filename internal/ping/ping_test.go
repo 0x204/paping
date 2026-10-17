@@ -10,29 +10,56 @@ import (
 
 func TestResolve(t *testing.T) {
 	tests := []struct {
-		host string
-		want string
+		network string
+		host    string
+		want    string
 	}{
-		{"192.0.2.1", "192.0.2.1"},
-		{"2001:db8::1", "2001:db8::1"},
-		{"::ffff:192.0.2.1", "192.0.2.1"},
-		{"fe80::1%eth0", "fe80::1%eth0"},
-		{"localhost", "127.0.0.1"},
+		{"ip", "192.0.2.1", "192.0.2.1"},
+		{"ip", "2001:db8::1", "2001:db8::1"},
+		{"ip", "::ffff:192.0.2.1", "192.0.2.1"},
+		{"ip", "fe80::1%eth0", "fe80::1%eth0"},
+		{"ip", "localhost", "127.0.0.1"},
+		{"ip4", "192.0.2.1", "192.0.2.1"},
+		{"ip4", "::ffff:192.0.2.1", "192.0.2.1"},
+		{"ip4", "localhost", "127.0.0.1"},
+		{"ip6", "2001:db8::1", "2001:db8::1"},
 	}
 	for _, tt := range tests {
-		got, err := Resolve(t.Context(), tt.host)
+		got, err := Resolve(t.Context(), tt.network, tt.host)
 		if err != nil {
-			t.Errorf("Resolve(%q): %v", tt.host, err)
+			t.Errorf("Resolve(%s, %q): %v", tt.network, tt.host, err)
 			continue
 		}
 		if got.String() != tt.want {
-			t.Errorf("Resolve(%q) = %s, want %s", tt.host, got, tt.want)
+			t.Errorf("Resolve(%s, %q) = %s, want %s", tt.network, tt.host, got, tt.want)
+		}
+	}
+}
+
+func TestResolveWrongFamily(t *testing.T) {
+	tests := []struct {
+		network string
+		host    string
+		want    string
+	}{
+		{"ip4", "2001:db8::1", "2001:db8::1 is not an IPv4 address"},
+		{"ip6", "192.0.2.1", "192.0.2.1 is not an IPv6 address"},
+		{"ip6", "::ffff:192.0.2.1", "::ffff:192.0.2.1 is not an IPv6 address"},
+	}
+	for _, tt := range tests {
+		addr, err := Resolve(t.Context(), tt.network, tt.host)
+		if err == nil {
+			t.Errorf("Resolve(%s, %q) = %s, want an error", tt.network, tt.host, addr)
+			continue
+		}
+		if err.Error() != tt.want {
+			t.Errorf("Resolve(%s, %q) error = %q, want %q", tt.network, tt.host, err, tt.want)
 		}
 	}
 }
 
 func TestResolveInvalidHost(t *testing.T) {
-	if addr, err := Resolve(t.Context(), "invalid..host"); err == nil {
+	if addr, err := Resolve(t.Context(), "ip", "invalid..host"); err == nil {
 		t.Errorf("Resolve returned %s, want an error", addr)
 	}
 }
